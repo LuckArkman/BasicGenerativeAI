@@ -1,0 +1,16 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BasicGenerativeAI", "BasicGenerativeAI\BasicGenerativeAI.csproj", "{96E5007B-01AA-4DDB-80CB-51BC186B207B}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{96E5007B-01AA-4DDB-80CB-51BC186B207B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{96E5007B-01AA-4DDB-80CB-51BC186B207B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{96E5007B-01AA-4DDB-80CB-51BC186B207B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{96E5007B-01AA-4DDB-80CB-51BC186B207B}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
