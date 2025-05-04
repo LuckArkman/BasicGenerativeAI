@@ -8,8 +8,10 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <PackageReference Include="HuggingFace" Version="0.4.1-dev.21" />
         <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.15" />
         <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
+        <PackageReference Include="TorchSharp-cpu" Version="0.105.0" />
     </ItemGroup>
 
     <ItemGroup>

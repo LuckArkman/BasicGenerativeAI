@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("BasicGenerativeAI")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+743c0debc6344edbb36a282e0f758f77892a4ab1")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+743239530c4a1bff287f6257f637cd7e19260509")]
 [assembly: System.Reflection.AssemblyProductAttribute("BasicGenerativeAI")]
 [assembly: System.Reflection.AssemblyTitleAttribute("BasicGenerativeAI")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
