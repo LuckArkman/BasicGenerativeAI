@@ -6,7 +6,8 @@ using static TorchSharp.torch.nn;
 using static TorchSharp.torch.optim; // Para otimizadores
 using System.Collections.Generic;
 using System.Linq;
-using System.IO; // Para caminhos de arquivo
+using System.IO;
+using TorchSharp.Modules; // Para caminhos de arquivo
 
 namespace BasicGenerativeAI.System;
 
@@ -20,6 +21,8 @@ public class TrainingScript
         private readonly double _learningRate;
         private readonly string _modelSavePath;
         private readonly Device _device; // CPU ou GPU
+        private OptimizerHelper _optimizer; // O Optimizer não é IDisposable
+        private Loss<Tensor, Tensor, Tensor> _criterion; // Loss é IDisposable
 
         // Construtor
         public TrainingScript(TokenizerService tokenizerService, TorchSharpGenerativeModel model,
@@ -44,8 +47,8 @@ public class TrainingScript
         var trainingBatches = TrainingDataHelper.PrepareBatches(trainingText, _tokenizerService, maxSequenceLength: _maxSequenceLength, batchSize: _batchSize);
 
         // Inicializar otimizador e critério
-        var optimizer = Adam(_model.parameters(), lr: _learningRate);
-        using var criterion = CrossEntropyLoss();
+        _optimizer = Adam(_model.parameters(), lr: _learningRate);
+        _criterion = CrossEntropyLoss();
 
         Console.WriteLine($"Total de batches: {trainingBatches.Count}");
         if (trainingBatches.Count == 0)
@@ -86,10 +89,15 @@ public class TrainingScript
 
                 // Forward pass único
                 using var outputLogits = _model._modelModule.forward(inputBatch);
-                if (outputLogits == null || outputLogits.Handle == IntPtr.Zero)
+                // Verificar validade do Tensor de forma explícita
+                bool isOutputNull = outputLogits is null;
+                bool isHandleInvalid = !isOutputNull && outputLogits.Handle == IntPtr.Zero;
+                bool isOutputInvalid = isOutputNull || isHandleInvalid;
+                if (isOutputInvalid)
                 {
                     Console.WriteLine("Erro: outputLogits inválido após forward.");
                     Console.WriteLine($"Input batch max ID: {maxId}, min ID: {minId}");
+                    Console.WriteLine($"Input batch values (primeiros 10): [{string.Join(", ", inputBatch.flatten().to_type(ScalarType.Int64).cpu().data<long>().Take(10))}]");
                     continue;
                 }
 
@@ -103,12 +111,12 @@ public class TrainingScript
                 using var reshapedTargets = targetBatch.view(targetBatch.size(0) * targetBatch.size(1));
 
                 // Calcular a perda
-                using var loss = criterion.forward(reshapedLogits, reshapedTargets);
+                using var loss = _criterion.forward(reshapedLogits, reshapedTargets);
 
                 // Backward pass
-                optimizer.zero_grad();
+                _optimizer.zero_grad();
                 loss.backward();
-                optimizer.step();
+                _optimizer.step();
 
                 totalLoss += loss.ToSingle();
                 batchCount++;

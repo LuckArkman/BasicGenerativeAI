@@ -5,8 +5,8 @@ using System.Collections.Generic;
 
 namespace BasicGenerativeAI.Services;
 
-public class GoogleSearchService
-    {
+public class GoogleSearchService : IDisposable
+{
         private readonly HttpClient _httpClient;
         private readonly string _apiKey; // Chave da API do Google Cloud
         private readonly string _cx;     // ID do Custom Search Engine
@@ -99,8 +99,9 @@ public class GoogleSearchService
 
         // Dispor o HttpClient se necessário (embora Singleton HttpClient seja prática comum,
         // para este exemplo simples, podemos manter a instância aqui).
-         public void Dispose()
+        public void Dispose()
         {
-            _httpClient.Dispose();
+            Dispose();
+            GC.SuppressFinalize(this);
         }
     }
