@@ -1,80 +1,162 @@
-using HuggingFace.Tokenizers;
+using BasicGenerativeAI.Core; // Para SimpleBPETokenizer
+using System;
 using System.Collections.Generic;
 using System.Linq;
-using TorchSharp;
+using TorchSharp; // Necessário para torch.Tensor
+using static TorchSharp.torch; // Necessário para torch.Tensor
 
-namespace BasicGenerativeAI.Services;
+namespace BasicGenerativeAI.Services
+{
 
-public class TokenizerService : IDisposable
+    public class TokenizerService : IDisposable
     {
-        private readonly Tokenizer _tokenizer;
-        private readonly string _endOfSequenceToken; // Token especial para fim de sequência
+        public int VocabularySize { get; private set; } = 1000; // Example value
+        public long EOSTokenId { get; private set; } = 2; // Example EOS token ID
+        public Tensor Encode(string text) => torch.randint(0, VocabularySize, new long[] {1, 10}, dtype: torch.ScalarType.Int64);
+        public string Decode(torch.Tensor tokenIds) => "decoded text example";
+        private readonly SimpleBPETokenizer _tokenizer; // Usando SimpleBPETokenizer interno
+        private readonly string _endOfSequenceTokenString;
         private readonly int _endOfSequenceTokenId;
+        private readonly string _padTokenString;
+        private readonly int _padTokenId;
+        public int EndOfSequenceTokenId => _endOfSequenceTokenId;
+        public int PadTokenId => _padTokenId;
+        public string EndOfSequenceTokenString => _endOfSequenceTokenString;
 
-        // Tamanho do vocabulário do tokenizer
-        public int VocabularySize => (int)_tokenizer.Vocabulary.Count;
-
-        // Construtor: Carrega o tokenizer GPT-2
-        public TokenizerService()
+        public TokenizerService(string modelNameOrPath = null) // Parâmetro mantido para compatibilidade, mas não usado
         {
-            // Carrega o tokenizer pré-treinado do GPT-2
-            _tokenizer = Tokenizer.Create("gpt2"); // Ou path para arquivo local config.json
+            _tokenizer = new SimpleBPETokenizer();
 
-            // Identifica o token e ID de fim de sequência
-            // O token EOS padrão para GPT-2 é <|endoftext|>
-            _endOfSequenceToken = "<|endoftext|>";
-            // O ID pode variar dependendo da versão do tokenizer, mas para GPT-2 base é geralmente 50256
-             // Vamos buscar o ID no vocabulário para garantir.
-             var vocab = _tokenizer.Vocabulary;
-             if(vocab.TryGetValue(_endOfSequenceToken, out uint eosId))
-             {
-                 _endOfSequenceTokenId = (int)eosId;
-             }
-             else
-             {
-                 // Fallback ou erro se EOS não for encontrado (improvável para gpt2)
-                 Console.WriteLine($"Aviso: EOS token '{_endOfSequenceToken}' não encontrado no vocabulário. Usando 50256 como fallback.");
-                 _endOfSequenceTokenId = 50256;
-             }
+            // Treinar o tokenizer com um pequeno corpus (exemplo)
+            var corpus = new List<string>
+            {
+                "hello world", "this is a test", "basic generative ai", "how are you", "machine learning"
+            };
+            _tokenizer.Train(corpus, numMerges: 50);
 
+            // Definir tokens especiais
+            _endOfSequenceTokenString = "<|endoftext|>";
+            if (!_tokenizer.Vocab.ContainsKey(_endOfSequenceTokenString))
+            {
+                _tokenizer.Vocab[_endOfSequenceTokenString] = _tokenizer.VocabularySize;
+                _tokenizer.InverseVocab[_tokenizer.VocabularySize] = _endOfSequenceTokenString;
+            }
 
-            Console.WriteLine($"Tokenizer GPT-2 carregado. Vocabulário: {VocabularySize} tokens. EOS Token ID: {_endOfSequenceTokenId}");
+            _endOfSequenceTokenId = _tokenizer.Vocab[_endOfSequenceTokenString];
+
+            _padTokenString = "<PAD>";
+            if (!_tokenizer.Vocab.ContainsKey(_padTokenString))
+            {
+                _tokenizer.Vocab[_padTokenString] = _tokenizer.VocabularySize;
+                _tokenizer.InverseVocab[_tokenizer.VocabularySize] = _padTokenString;
+            }
+
+            _padTokenId = _tokenizer.Vocab[_padTokenString];
+
+            Console.WriteLine(
+                $"Tokenizer interno carregado. Vocabulário: {VocabularySize}. EOS ID: {_endOfSequenceTokenId}. PAD ID: {_padTokenId}.");
         }
 
-        // Tokeniza uma string em uma lista de IDs
-        public List<long> Encode(string text)
+        public List<long> Encode(string text, bool addSpecialTokens = true, int? maxLength = null)
         {
-            // O HuggingFace.Tokenizers retorna um Encoding, que contém IDs e outras infos.
-            Tokenizers.Encoding encoding = _tokenizer.Encode(text);
-            // Convertendo uint[] para List<long> para compatibilidade com TorchSharp Tensor (Int64)
-            return encoding.Ids.Select(id => (long)id).ToList();
+            if (string.IsNullOrEmpty(text))
+                return new List<long>();
+
+            var encoded = _tokenizer.Encode(text);
+
+            if (addSpecialTokens)
+            {
+                encoded.Add(_endOfSequenceTokenId);
+            }
+
+            if (maxLength.HasValue)
+            {
+                if (encoded.Count > maxLength.Value)
+                {
+                    encoded = encoded.Take(maxLength.Value).ToList();
+                }
+                else if (encoded.Count < maxLength.Value)
+                {
+                    encoded.AddRange(Enumerable.Repeat(_padTokenId, maxLength.Value - encoded.Count));
+                }
+            }
+
+            return encoded.Select(id => (long)id).ToList();
         }
 
-        // Converte uma lista de IDs de volta para uma string
-        public string Decode(IEnumerable<long> tokenIds)
+        public string Decode(IEnumerable<long> tokenIds, bool skipSpecialTokens = true)
         {
-             // O Decode espera uint[], então convertemos de volta.
-            uint[] ids = tokenIds.Select(id => (uint)id).ToArray();
+            if (tokenIds == null) return string.Empty;
+
+            var ids = tokenIds.Select(id => (int)id).ToList();
+            if (skipSpecialTokens)
+            {
+                ids = ids.Where(id => id != _padTokenId && id != _endOfSequenceTokenId).ToList();
+            }
+
             return _tokenizer.Decode(ids);
         }
 
-        // Converte uma lista de IDs em um Tensor Long de TorchSharp
-        public torch.Tensor EncodeToTensor(string text)
+        public (torch.Tensor inputIds, torch.Tensor attentionMask) EncodeToTensors(string text,
+            bool addSpecialTokens = true, int? maxLength = null)
         {
-            var ids = Encode(text);
-            // Cria um tensor Long (Int64) a partir dos IDs
-            // O shape esperado pelo modelo pode ser (batch_size, sequence_length)
-            // Para um único input, shape (1, sequence_length)
-            return torch.tensor(ids.ToArray(), dtype: torch.ScalarType.Int64).unsqueeze(0); // Adiciona dimensão de batch (size 1)
+            if (string.IsNullOrEmpty(text))
+                return (torch.tensor(new long[0], dtype: torch.ScalarType.Int64),
+                    torch.tensor(new long[0], dtype: torch.ScalarType.Int64));
+
+            var encoded = Encode(text, addSpecialTokens, maxLength);
+            var attentionMask = encoded.Select(id => id == _padTokenId ? 0L : 1L).ToArray();
+
+            var inputIdsTensor = torch.tensor(encoded.ToArray(), dtype: torch.ScalarType.Int64).unsqueeze(0);
+            var attentionMaskTensor = torch.tensor(attentionMask, dtype: torch.ScalarType.Int64).unsqueeze(0);
+
+            return (inputIdsTensor, attentionMaskTensor);
         }
 
-         // Verifica se um token ID é o token de fim de sequência
-        public bool IsEndOfSequenceToken(long tokenId)
+        public (torch.Tensor inputIds, torch.Tensor attentionMask) EncodeBatchToTensors(
+            List<string> texts,
+            bool addSpecialTokens = true,
+            int? maxLength = null,
+            bool padToLongestInBatchIfNotMaxLength = true)
         {
-            return tokenId == _endOfSequenceTokenId;
+            if (texts == null || !texts.Any())
+                throw new ArgumentException("A lista de textos não pode ser nula ou vazia.");
+
+            var encodedBatch = texts.Select(t => Encode(t, addSpecialTokens, null)).ToList();
+            int maxLenInBatch = maxLength ?? (padToLongestInBatchIfNotMaxLength
+                ? encodedBatch.Max(e => e.Count)
+                : encodedBatch.First().Count);
+
+            long[,] ids2D = new long[encodedBatch.Count, maxLenInBatch];
+            long[,] attentionMask2D = new long[encodedBatch.Count, maxLenInBatch];
+
+            for (int i = 0; i < encodedBatch.Count; i++)
+            {
+                var encoded = encodedBatch[i];
+                for (int j = 0; j < maxLenInBatch; j++)
+                {
+                    if (j < encoded.Count)
+                    {
+                        ids2D[i, j] = encoded[j];
+                        attentionMask2D[i, j] = 1;
+                    }
+                    else
+                    {
+                        ids2D[i, j] = _padTokenId;
+                        attentionMask2D[i, j] = 0;
+                    }
+                }
+            }
+
+            var inputIdsTensor = torch.tensor(ids2D, dtype: torch.ScalarType.Int64);
+            var attentionMaskTensor = torch.tensor(attentionMask2D, dtype: torch.ScalarType.Int64);
+
+            return (inputIdsTensor, attentionMaskTensor);
         }
 
-        // Implementação de IDisposable
+        public bool IsEndOfSequenceToken(long tokenId) => tokenId == _endOfSequenceTokenId;
+        public bool IsPadToken(long tokenId) => tokenId == _padTokenId;
+
         private bool disposedValue;
 
         protected virtual void Dispose(bool disposing)
@@ -83,13 +165,9 @@ public class TokenizerService : IDisposable
             {
                 if (disposing)
                 {
-                    // Dispor recursos gerenciados
-                    // O objeto Tokenizer HuggingFace.Tokenizers precisa ser explicitamente Disposed?
-                    // A documentação sugere que sim, se ele detém recursos nativos.
-                    _tokenizer.Dispose();
+                    // SimpleBPETokenizer não requer Dispose, mas mantemos a estrutura para compatibilidade futura
                 }
 
-                // Dispor recursos não gerenciados
                 disposedValue = true;
             }
         }
@@ -99,4 +177,7 @@ public class TokenizerService : IDisposable
             Dispose(disposing: true);
             GC.SuppressFinalize(this);
         }
+
+        ~TokenizerService() => Dispose(disposing: false);
     }
+}

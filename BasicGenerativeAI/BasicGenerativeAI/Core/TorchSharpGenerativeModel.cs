@@ -172,6 +172,16 @@ namespace BasicGenerativeAI.Core
                 InitializeModel(); // Re-initialize to a clean state on any error
             }
         }
+        
+        // Adicionar método parameters() para delegar ao _modelModule
+        public IEnumerable<torch.Tensor> parameters()
+        {
+            if (_modelModule == null)
+            {
+                throw new InvalidOperationException("Modelo não inicializado.");
+            }
+            return _modelModule.parameters();
+        }
 
         public override void Save(string filePath)
         {

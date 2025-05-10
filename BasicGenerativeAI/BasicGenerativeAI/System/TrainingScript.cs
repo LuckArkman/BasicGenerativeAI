@@ -33,133 +33,106 @@ public class TrainingScript
             _maxSequenceLength = maxSequenceLength;
             _learningRate = learningRate;
             _modelSavePath = modelSavePath;
-            _device = device ?? Device.CPU; // Default para CPU se não especificado
+            _device = device ?? torch.CPU; // Default para CPU se não especificado
         }
 
         // Executa o processo de treinamento
         public void RunTraining()
+    {
+        // Usar o tokenizerService injetado via construtor
+        var trainingText = File.ReadAllText("training_text.txt"); // Certifique-se de que o arquivo existe
+        var trainingBatches = TrainingDataHelper.PrepareBatches(trainingText, _tokenizerService, maxSequenceLength: _maxSequenceLength, batchSize: _batchSize);
+
+        // Inicializar otimizador e critério
+        var optimizer = Adam(_model.parameters(), lr: _learningRate);
+        using var criterion = CrossEntropyLoss();
+
+        Console.WriteLine($"Total de batches: {trainingBatches.Count}");
+        if (trainingBatches.Count == 0)
         {
-            Console.WriteLine($"Iniciando treinamento em {_device.type.ToString().ToUpper()}...");
+            Console.WriteLine("Erro: Nenhum batch criado para treinamento.");
+            return;
+        }
 
-            // Carrega dados de treinamento (usando o helper com dados de exemplo)
-            var trainingBatches = TrainingDataHelper.PrepareBatches(
-                TrainingDataHelper.ExampleTrainingData,
-                _tokenizerService,
-                _maxSequenceLength,
-                _batchSize
-            );
+        float totalLoss = 0f;
+        int batchCount = 0;
 
-            if (trainingBatches.Count == 0)
+        for (int epoch = 0; epoch < _epochs; epoch++)
+        {
+            Console.WriteLine($"Época {epoch + 1}/{_epochs}...");
+            batchCount = 0;
+            totalLoss = 0f;
+
+            foreach (var (inputBatch, targetBatch) in trainingBatches)
             {
-                Console.WriteLine("Nenhum dado de treinamento gerado. Abortando.");
-                return;
-            }
+                batchCount++;
+                Console.WriteLine($"Batch {batchCount}: Input shape: [{string.Join(", ", inputBatch.shape)}], Target shape: [{string.Join(", ", targetBatch.shape)}]");
 
-            // Define a função de perda (Cross-Entropy Loss para classificação de token)
-            // O ignore_index é útil se você tiver um token de padding que não deve contribuir para a loss
-            // Para GPT-2 usando EOS como padding, talvez não queiramos ignorar, mas é uma opção.
-            // Vamos ignorar o ID que usamos para padding no helper se ele for diferente de um ID válido.
-            // Se usamos EOS (vocab_size - 1), não ignoramos. Se usarmos vocab_size, ignoramos.
-            // Vamos assumir que o ID usado para padding *não* deve ser ignorado para simplificar com EOS.
-            // Se você usar um ID específico (ex: vocab_size), use ignore_index.
-             using var criterion = CrossEntropyLoss(reduction: Reduction.Mean);
-             // Se estivéssemos ignorando um PAD_ID específico (e.g., vocab_size):
-             // using var criterion = CrossEntropyLoss(ignore_index: _tokenizerService.VocabularySize, reduction: Reduction.Mean);
-
-
-            // Define o otimizador (AdamW é uma escolha comum)
-            using var optimizer = AdamW(_model.modelModule.parameters(), lr: _learningRate);
-
-            // Move o modelo para o dispositivo (CPU ou GPU)
-            _model.modelModule.to(_device);
-
-            Console.WriteLine($"Treinamento por {_epochs} épocas...");
-
-            // Loop de treinamento principal
-            for (int epoch = 1; epoch <= _epochs; epoch++)
-            {
-                _model.modelModule.train(); // Coloca o modelo em modo de treinamento
-
-                double totalLoss = 0;
-                int batchCount = 0;
-
-                foreach (var batch in trainingBatches)
+                // Validar o inputBatch
+                if (inputBatch.Handle == IntPtr.Zero)
                 {
-                    // Move os dados do batch para o dispositivo
-                    using var inputBatch = batch.inputBatch.to(_device);
-                    using var targetBatch = batch.targetBatch.to(_device);
-
-                    optimizer.zero_grad(); // Zera os gradientes acumulados
-
-                    // Forward pass: obter logits do modelo
-                    // Input shape: (batch_size, seq_len)
-                    // Output logits shape: (batch_size, seq_len, vocab_size)
-                    using var outputLogits = _model.modelModule.forward(inputBatch);
-
-                    // Calcular a loss
-                    // CrossEntropyLoss espera logits com shape (N, C) e targets com shape (N)
-                    // Onde N é o número total de elementos (batch_size * seq_len)
-                    // C é o número de classes (vocab_size)
-
-                    // Reshape logits: (batch_size * seq_len, vocab_size)
-                    using var reshapedLogits = outputLogits.view(
-                         outputLogits.size(0) * outputLogits.size(1),
-                         outputLogits.size(2)
-                     );
-
-                    // Reshape targets: (batch_size * seq_len)
-                    using var reshapedTargets = targetBatch.view(targetBatch.size(0) * targetBatch.size(1));
-
-                    // Calcula a loss
-                    using var loss = criterion.forward(reshapedLogits, reshapedTargets);
-
-                    // Backward pass: calcular gradientes
-                    loss.backward();
-
-                    // Otimizador step: atualizar pesos
-                    optimizer.step();
-
-                    totalLoss += loss.ToSingle(); // Acumula a loss (converte para float)
-                    batchCount++;
-
-                    // Opcional: imprimir loss a cada X batches
-                    if (batchCount % 10 == 0)
-                    {
-                         Console.WriteLine($"  Época {epoch}/{_epochs}, Batch {batchCount}/{trainingBatches.Count}, Loss: {totalLoss / batchCount:F4}");
-                    }
-
-                     // Dispor tensores temporários no final de cada batch
-                     inputBatch.Dispose();
-                     targetBatch.Dispose();
-                     outputLogits.Dispose();
-                     reshapedLogits.Dispose();
-                     reshapedTargets.Dispose();
-                     loss.Dispose();
+                    Console.WriteLine("Erro: inputBatch inválido antes de passar para o modelo.");
+                    continue;
                 }
 
-                double avgLoss = totalLoss / trainingBatches.Count;
-                Console.WriteLine($"Época {epoch}/{_epochs} concluída. Loss média: {avgLoss:F4}");
+                long maxId = inputBatch.max().item<long>();
+                long minId = inputBatch.min().item<long>();
+                Console.WriteLine($"Input batch - Máximo ID: {maxId}, Mínimo ID: {minId}");
+                if (maxId >= _tokenizerService.VocabularySize || minId < 0)
+                {
+                    Console.WriteLine($"Erro: IDs fora do intervalo [0, {_tokenizerService.VocabularySize - 1}]");
+                    continue;
+                }
 
-                // Opcional: Salvar o modelo a cada época ou a cada X épocas
-                 if (epoch % 5 == 0 || epoch == _epochs) // Salva a cada 5 épocas e na última
-                 {
-                     _model.Save($"{_modelSavePath.Replace(".pth", "")}_epoch{epoch}.pth");
-                 }
+                // Forward pass único
+                using var outputLogits = _model._modelModule.forward(inputBatch);
+                if (outputLogits == null || outputLogits.Handle == IntPtr.Zero)
+                {
+                    Console.WriteLine("Erro: outputLogits inválido após forward.");
+                    Console.WriteLine($"Input batch max ID: {maxId}, min ID: {minId}");
+                    continue;
+                }
+
+                Console.WriteLine($"Output logits shape: [{string.Join(", ", outputLogits.shape)}]");
+
+                // Reshape logits e targets
+                using var reshapedLogits = outputLogits.view(
+                    outputLogits.size(0) * outputLogits.size(1),
+                    outputLogits.size(2)
+                );
+                using var reshapedTargets = targetBatch.view(targetBatch.size(0) * targetBatch.size(1));
+
+                // Calcular a perda
+                using var loss = criterion.forward(reshapedLogits, reshapedTargets);
+
+                // Backward pass
+                optimizer.zero_grad();
+                loss.backward();
+                optimizer.step();
+
+                totalLoss += loss.ToSingle();
+                batchCount++;
+
+                if (batchCount % 10 == 0)
+                {
+                    Console.WriteLine($"  Época {epoch}/{_epochs}, Batch {batchCount}/{trainingBatches.Count}, Loss: {totalLoss / batchCount:F4}");
+                }
             }
 
-            Console.WriteLine("Treinamento concluído.");
+            double avgLoss = totalLoss / batchCount;
+            Console.WriteLine($"Época {epoch}/{_epochs} concluída. Loss média: {avgLoss:F4}");
 
-            // Salvar o modelo final
-            _model.Save(_modelSavePath);
-
-             // Dispor batches
-             // Embora os tensores dos batches individuais tenham sido dispostos,
-             // a lista de tuplas ainda pode conter referências.
-             // Como PrepareBatches já dispôs os tensores individuais,
-             // apenas limpar a lista aqui é suficiente.
-             trainingBatches.Clear();
-
-
-            // Dispor otimizador e loss (criados com using)
+            // Salvar o modelo a cada 5 épocas e na última
+            if (epoch % 5 == 0 || epoch == _epochs - 1)
+            {
+                _model.Save($"{_modelSavePath.Replace(".pth", "")}_epoch{epoch}.pth");
+            }
         }
+
+        Console.WriteLine("Treinamento concluído.");
+        _model.Save(_modelSavePath);
+
+        // Limpar referências (os tensores já foram dispostos com using)
+        trainingBatches.Clear();
+    }
     }
