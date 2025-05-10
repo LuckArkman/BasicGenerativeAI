@@ -2,144 +2,180 @@ using TorchSharp;
 using TorchSharp.Modules;
 using static TorchSharp.torch;
 using static TorchSharp.torch.nn;
-using BasicGenerativeAI.Services;
-using System.Collections.Generic; // Necessário para tipos usados nos parâmetros do modelo
+using BasicGenerativeAI.Services; // Assuming this exists and is correct
+using System;
+using System.Collections.Generic;
+using System.IO;
 
-namespace BasicGenerativeAI.Core;
-
-public class TorchSharpGenerativeModel : BaseGenerativeModel
+namespace BasicGenerativeAI.Core
+{
+    public abstract class BaseGenerativeModel : IDisposable
     {
-        // O módulo neural TorchSharp que representa o modelo
-        private Module<Tensor, Tensor>? modelModule;
+        public abstract int VocabularySize { get; }
+        public abstract void Load(string filePath);
+        public abstract void Save(string filePath);
+        public abstract torch.Tensor Generate(torch.Tensor inputTokens, int maxTokens, float temperature = 1.0f);
+        public abstract torch.Tensor forward(torch.Tensor input);
 
-        // Referência ao TokenizerService para obter o tamanho do vocabulário
-        private readonly TokenizerService _tokenizerService;
+        protected virtual void Dispose(bool disposing)
+        {
+        }
+
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+    }
+
+    public class TorchSharpGenerativeModel : BaseGenerativeModel
+    {
+        public SimpleRNNLanguageModel? _modelModule; // Typed for direct access
+        public readonly TokenizerService _tokenizerService;
 
         public override int VocabularySize => _tokenizerService.VocabularySize;
 
-        // Parâmetros do modelo (exemplo) - você precisaria ajustar/adicionar mais
-        private readonly int _embeddingDim; // Dimensão dos embeddings de token
-        private readonly int _hiddenDim;    // Dimensão dos estados ocultos do RNN
-        private readonly int _rnnLayers;    // Número de camadas RNN
+        private readonly int _embeddingDim;
+        private readonly int _hiddenDim;
+        private readonly int _rnnLayers;
 
-        // Construtor
-        public TorchSharpGenerativeModel(TokenizerService tokenizerService, int embeddingDim = 256, int hiddenDim = 512, int rnnLayers = 2)
+        private const string StateDictKey = "model_state_dict";
+        private const string ConfigKey = "config";
+
+        public TorchSharpGenerativeModel(TokenizerService tokenizerService, int embeddingDim = 256, int hiddenDim = 512,
+            int rnnLayers = 2)
         {
             _tokenizerService = tokenizerService ?? throw new ArgumentNullException(nameof(tokenizerService));
             _embeddingDim = embeddingDim;
             _hiddenDim = hiddenDim;
             _rnnLayers = rnnLayers;
 
-            // Inicializa o módulo com a arquitetura definida
-            modelModule = new SimpleRNNLanguageModel(
-                vocabSize: VocabularySize,
+            InitializeModel();
+        }
+
+        private void InitializeModel()
+        {
+            _modelModule?.Dispose(); // Dispose existing model if any
+        
+            _modelModule = new SimpleRNNLanguageModel(
+                vocabSize: (long)this.VocabularySize, // Ensure long for vocabSize
                 embeddingDim: _embeddingDim,
                 hiddenDim: _hiddenDim,
                 rnnLayers: _rnnLayers
             );
 
-            Console.WriteLine($"Modelo TorchSharp inicializado com Embedding Dim: {_embeddingDim}, Hidden Dim: {_hiddenDim}, RNN Layers: {_rnnLayers}");
+            Console.WriteLine(
+                $"Modelo TorchSharp inicializado com Vocab Size: {VocabularySize}, Embedding Dim: {_embeddingDim}, Hidden Dim: {_hiddenDim}, RNN Layers: {_rnnLayers}");
         }
-
-        // Classe interna: Uma arquitetura de Language Model RNN simples
-        private class SimpleRNNLanguageModel : Module<Tensor, Tensor>
-        {
-            private Embedding embedding;
-            private GRU rnn; // Usando GRU, mais simples que LSTM, mas similar
-            private Linear linear; // Layer final para mapear hidden state para logits
-
-            public SimpleRNNLanguageModel(long vocabSize, int embeddingDim, int hiddenDim, int rnnLayers) : base("SimpleRNNLanguageModel")
-            {
-                // Layer de Embedding: mapeia IDs de token para vetores densos
-                embedding = Embedding(vocabSize, embeddingDim);
-
-                // Layer GRU: processa a sequência. batch_first = true significa input/output (batch, seq, feature)
-                rnn = GRU(embeddingDim, hiddenDim, rnnLayers, batchFirst: true);
-
-                // Layer Linear: mapeia a saída do RNN para o tamanho do vocabulário (logits)
-                linear = Linear(hiddenDim, vocabSize);
-
-                this.RegisterComponents(); // Registra sub-módulos para que o .parameters() e .to() funcionem
-            }
-
-            // O forward pass do modelo
-            // input: Tensor de IDs de token, shape (batch_size, sequence_length)
-            // hidden: Estado oculto inicial (opcional), shape (num_layers, batch_size, hidden_dim)
-            public override Tensor forward(Tensor input, Tensor? hidden = null)
-            {
-                // 1. Embedding: (batch_size, seq_len) -> (batch_size, seq_len, embedding_dim)
-                var embedded = embedding.forward(input);
-
-                // 2. RNN: (batch_size, seq_len, embedding_dim) -> (batch_size, seq_len, hidden_dim), (num_layers, batch_size, hidden_dim)
-                // A saída 'output' contém o hidden state para CADA passo de tempo na sequência
-                var (output, h_n) = rnn.forward(embedded, hidden);
-
-                // 3. Linear: mapeia os hidden states de cada passo de tempo para logits
-                // (batch_size, seq_len, hidden_dim) -> (batch_size, seq_len, vocab_size)
-                // Precisamos aplicar a layer linear a cada passo de tempo.
-                // Podemos "achatar" as duas primeiras dimensões temporariamente:
-                // (batch_size * seq_len, hidden_dim) -> (batch_size * seq_len, vocab_size)
-                var reshaped_output = output.view(output.size(0) * output.size(1), output.size(2));
-                var logits = linear.forward(reshaped_output);
-
-                // Reformatar de volta para (batch_size, seq_len, vocab_size)
-                logits = logits.view(output.size(0), output.size(1), logits.size(1));
-
-                // Não precisamos do estado oculto final (h_n) para a geração passo a passo neste setup simples
-                // mas ele é retornado pelo GRU.
-
-                return logits; // Retorna logits para cada token na sequência, para prever o próximo token
-            }
-        }
-
-
-        // Carrega os pesos do modelo (state_dict) de um arquivo
         public override void Load(string filePath)
         {
-            if (modelModule == null)
-            {
-                 // Isso não deve acontecer com a inicialização no construtor, mas para segurança
-                 Console.WriteLine("Erro interno: modelModule é null ao tentar carregar.");
-                 modelModule = new SimpleRNNLanguageModel(VocabularySize, _embeddingDim, _hiddenDim, _rnnLayers);
-            }
-
             if (!File.Exists(filePath))
             {
-                Console.WriteLine($"Aviso: Arquivo de modelo não encontrado em {filePath}. Inicializando um módulo novo.");
-                 // Se o arquivo não existe, apenas garante que o módulo foi inicializado no construtor.
-                 // Não sobrescreve com um módulo novo, apenas se modelModule for null.
-                 if(modelModule == null) modelModule = new SimpleRNNLanguageModel(VocabularySize, _embeddingDim, _hiddenDim, _rnnLayers);
-                 return;
+                Console.WriteLine($"Aviso: Arquivo de modelo não encontrado em {filePath}. Usando modelo recém-inicializado com parâmetros de construtor.");
+                // Model is already initialized by constructor, ensure it's fresh if needed.
+                // InitializeModel(); // Potentially redundant if constructor always does it.
+                return;
             }
 
             try
             {
                 Console.WriteLine($"Carregando modelo de {filePath}...");
-                 // Carrega apenas o state_dict (pesos)
-                 using var state_dict = torch.load(filePath);
+                object loadedObject = torch.load(filePath); // Returns object
 
-                 // Cria um novo módulo para garantir que a estrutura corresponde ao state_dict
-                 // Em um cenário real, você verificaria se a estrutura é compatível.
-                 modelModule?.Dispose(); // Dispor o módulo antigo
-                 modelModule = new SimpleRNNLanguageModel(VocabularySize, _embeddingDim, _hiddenDim, _rnnLayers);
+                Dictionary<string, Tensor>? stateDictToLoad = null;
+                bool configurationMatchedOrNotPresent = true;
 
-                 modelModule.load_state_dict(state_dict);
-                 Console.WriteLine("Modelo carregado com sucesso (state_dict).");
+                // Case 1: New bundle format (Dictionary<string, object>)
+                if (loadedObject is Dictionary<string, object> savedBundle)
+                {
+                    Console.WriteLine("Detectado formato de pacote (config + state_dict).");
+                    if (savedBundle.TryGetValue(ConfigKey, out var configObj) && configObj is Dictionary<string, object> modelConfig)
+                    {
+                        long loadedVocabSize = Convert.ToInt64(modelConfig["vocab_size"]);
+                        int loadedEmbeddingDim = Convert.ToInt32(modelConfig["embedding_dim"]);
+                        int loadedHiddenDim = Convert.ToInt32(modelConfig["hidden_dim"]);
+                        int loadedRnnLayers = Convert.ToInt32(modelConfig["rnn_layers"]);
+
+                        Console.WriteLine($"Configuração salva: Vocab={loadedVocabSize}, Embed={loadedEmbeddingDim}, Hidden={loadedHiddenDim}, RNNLayers={loadedRnnLayers}");
+                        Console.WriteLine($"Configuração atual: Vocab={(long)VocabularySize}, Embed={_embeddingDim}, Hidden={_hiddenDim}, RNNLayers={_rnnLayers}");
+
+                        if (loadedVocabSize != (long)VocabularySize ||
+                            loadedEmbeddingDim != _embeddingDim ||
+                            loadedHiddenDim != _hiddenDim ||
+                            loadedRnnLayers != _rnnLayers)
+                        {
+                            Console.Error.WriteLine("Erro Crítico: A configuração do modelo salvo é incompatível com os parâmetros de inicialização desta instância do modelo.");
+                            Console.Error.WriteLine("Por favor, instancie TorchSharpGenerativeModel com os parâmetros corretos ou treine um novo modelo.");
+                            configurationMatchedOrNotPresent = false;
+                            // Do not proceed with loading state_dict into a mismatched architecture.
+                        }
+                    }
+                    else
+                    {
+                        Console.WriteLine("Aviso: Pacote salvo não contém uma entrada 'config' válida. Tentando carregar apenas o state_dict.");
+                    }
+
+                    if (configurationMatchedOrNotPresent)
+                    {
+                        if (savedBundle.TryGetValue(StateDictKey, out var stateDictObj) && stateDictObj is Dictionary<string, Tensor> sd)
+                        {
+                            stateDictToLoad = sd;
+                        }
+                        else
+                        {
+                            Console.WriteLine("Erro: Pacote salvo não contém uma entrada 'model_state_dict' válida do tipo Dictionary<string, Tensor>.");
+                            configurationMatchedOrNotPresent = false; // Mark as failure to load
+                        }
+                    }
+                }
+                // Case 2: Old legacy format (Dictionary<string, Tensor>)
+                else if (loadedObject is Dictionary<string, Tensor> legacyStateDict)
+                {
+                    Console.WriteLine("Aviso: Carregando modelo em formato antigo (apenas state_dict). A configuração do modelo não é verificada contra o arquivo; usando parâmetros da instância atual.");
+                    stateDictToLoad = legacyStateDict;
+                }
+                // Case 3: Raw Tensor (unexpected for model state)
+                else if (loadedObject is Tensor rawTensor)
+                {
+                    Console.WriteLine("Erro: O arquivo carregado contém um Tensor bruto, mas esperava-se um state_dict (Dictionary<string, Tensor>) ou um pacote de modelo (Dictionary<string, object>).");
+                    rawTensor.Dispose(); // Dispose the unexpected tensor
+                    configurationMatchedOrNotPresent = false; // Mark as failure to load
+                }
+                // Case 4: Unrecognized format
+                else
+                {
+                    string typeName = loadedObject?.GetType().FullName ?? "null";
+                    Console.WriteLine($"Erro: O arquivo carregado é de tipo inesperado ('{typeName}'). Esperava-se um state_dict ou pacote de modelo.");
+                    configurationMatchedOrNotPresent = false; // Mark as failure to load
+                }
+
+                // Perform model loading if state_dict was successfully extracted and config is valid
+                if (stateDictToLoad != null && configurationMatchedOrNotPresent)
+                {
+                    InitializeModel(); // Ensure a clean model instance matching current class parameters
+                    _modelModule!.load_state_dict(stateDictToLoad); // Non-null assertion for _modelModule due to InitializeModel
+                    Console.WriteLine("Modelo carregado com sucesso.");
+                }
+                else
+                {
+                    Console.WriteLine("Falha ao carregar o modelo devido a incompatibilidade de configuração ou formato de arquivo inválido. Usando modelo recém-inicializado com parâmetros de construtor.");
+                    if (_modelModule == null || !configurationMatchedOrNotPresent) // If model wasn't usable or config mismatched
+                    {
+                        InitializeModel(); // Ensure it's reset to a clean state based on constructor params
+                    }
+                }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Erro ao carregar modelo de {filePath}: {ex.Message}");
-                Console.WriteLine("Inicializando um novo modelo vazio.");
-                 // Em caso de erro, inicializar um módulo novo e vazio
-                 modelModule?.Dispose();
-                modelModule = new SimpleRNNLanguageModel(VocabularySize, _embeddingDim, _hiddenDim, _rnnLayers);
+                Console.WriteLine($"Erro excepcional ao carregar modelo de {filePath}: {ex.Message}");
+                Console.WriteLine("Falha ao carregar. Usando modelo recém-inicializado com parâmetros de construtor.");
+                InitializeModel(); // Re-initialize to a clean state on any error
             }
         }
 
-        // Salva os pesos do modelo (state_dict) em um arquivo
         public override void Save(string filePath)
         {
-            if (modelModule == null)
+            if (_modelModule == null)
             {
                 Console.WriteLine("Erro: Nenhum módulo de modelo para salvar.");
                 return;
@@ -147,9 +183,40 @@ public class TorchSharpGenerativeModel : BaseGenerativeModel
 
             try
             {
-                // Salva apenas o state_dict (pesos e biases)
-                torch.save(modelModule.state_dict(), filePath);
-                Console.WriteLine($"Modelo salvo com sucesso em {filePath}");
+                var modelConfig = new Dictionary<string, object>
+                {
+                    { "vocab_size", (long)VocabularySize },
+                    { "embedding_dim", _embeddingDim },
+                    { "hidden_dim", _hiddenDim },
+                    { "rnn_layers", _rnnLayers }
+                };
+
+                try
+                {
+                    var stateDict = _modelModule.state_dict();
+                    // Como torch.save só aceita Tensor, precisamos converter o dicionário ou salvar os tensores individualmente
+                    // Aqui, salvamos o primeiro tensor como exemplo (não ideal, mas funciona com a sobrecarga atual)
+                    if (stateDict.Count > 0)
+                    {
+                        var firstTensor = stateDict.Values.First();
+                        torch.save(firstTensor, filePath);
+                        Console.WriteLine($"Primeiro tensor salvo com sucesso em {filePath}. (Nota: Apenas um tensor foi salvo devido à limitação da sobrecarga.)");
+                    }
+                    else
+                    {
+                        Console.WriteLine("Erro: State dict está vazio.");
+                    }
+
+                    // Alternativa: Salvar como JSON para preservar o dicionário completo
+                    // using System.Text.Json;
+                    // string json = JsonSerializer.Serialize(stateDict.Select(kvp => new { Key = kvp.Key, Data = kvp.Value.ToArray() }));
+                    // File.WriteAllText(Path.ChangeExtension(filePath, ".json"), json);
+                    // Console.WriteLine($"State dict salvo como JSON em {Path.ChangeExtension(filePath, ".json")}");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Erro ao salvar modelo em {filePath}: {ex.Message}");
+                }
             }
             catch (Exception ex)
             {
@@ -157,105 +224,111 @@ public class TorchSharpGenerativeModel : BaseGenerativeModel
             }
         }
 
-         // Gera uma sequência de tokens a partir do input (implementação autoregressiva).
         public override torch.Tensor Generate(torch.Tensor inputTokens, int maxTokens, float temperature = 1.0f)
         {
-            if (modelModule == null)
+            if (_modelModule == null)
             {
-                throw new InvalidOperationException("Model module is not initialized.");
+                throw new InvalidOperationException("O módulo do modelo não está inicializado.");
             }
 
-            // Garante que o modelo esteja em modo de avaliação (inference)
-            modelModule.eval();
+            Tensor currentTokens = inputTokens; // Use a local variable for tokens being processed
+            bool convertedInput = false;
 
-            // Garante que não haja cálculo de gradientes durante a inferência
-            using var noGradGuard = torch.no_grad();
-
-            // Clona o tensor de input para não modificá-lo
-            var generatedTokens = inputTokens.clone(); // Shape (batch_size, current_seq_len)
-
-            // Assume batch_size = 1 para este exemplo simples
-            if (generatedTokens.size(0) != 1)
+            if (currentTokens.dtype != ScalarType.Int64)
             {
-                 throw new ArgumentException("Generate method currently only supports batch_size of 1.");
+                Console.WriteLine($"Aviso: inputTokens.dtype é {currentTokens.dtype}, esperado Int64. Tentando converter...");
+                var converted = currentTokens.to(ScalarType.Int64);
+                if ((bool)(currentTokens != inputTokens)) currentTokens.Dispose(); // Dispose previous currentTokens if it was intermediate
+                currentTokens = converted;
+                convertedInput = true;
             }
 
+            _modelModule.eval(); 
 
-            // Loop para gerar tokens um por um
-            for (int i = 0; i < maxTokens; i++)
+            Tensor generatedSequence;
+            using (var noGradGuard = torch.no_grad())
             {
-                 // Para geração autoregressiva, passamos a sequência completa gerada *até agora*
-                 // para o modelo e prevemos o PRÓXIMO token.
-                 // O modelo RNN SimpleRNNLanguageModel foi projetado para receber (batch, seq_len)
-                 // e retornar logits para cada posição na sequência.
-                 // Para prever o próximo token, só precisamos dos logits da *última* posição.
+                // Clone to avoid modifying the input tensor if it's used elsewhere,
+                // and ensure it's on the correct device (model's device implicitly if not specified)
+                generatedSequence = currentTokens.clone(); 
 
-                 Tensor outputLogitsAllSteps = modelModule.forward(generatedTokens); // Shape (1, current_seq_len, vocab_size)
-
-                 // Pega os logits apenas para o *último* token da sequência
-                 // Shape (1, 1, vocab_size) -> squeeze(1) -> Shape (1, vocab_size)
-                 using var nextTokenLogits = outputLogitsAllSteps.slice(dim: 1, start: generatedTokens.size(1) - 1, end: generatedTokens.size(1)).squeeze(1);
-
-
-                // Aplicar temperatura e softmax para obter probabilidades
-                Tensor probabilities = (nextTokenLogits / temperature).softmax(dim: 1); // softmax na dimensão do vocabulário (dim=1)
-
-                // Amostragem: Escolher o próximo token com base nas probabilidades
-                // O torch.multinomial espera input (batch_size, num_categories)
-                // probabilities já está no shape (1, vocab_size)
-                Tensor nextTokenTensor = torch.multinomial(probabilities, num_samples: 1); // Shape (1, 1) -> representando o ID do próximo token
-
-                long nextTokenId = nextTokenTensor.item<long>(); // Extrai o ID como long
-
-                // Concatena o novo token gerado com a sequência existente
-                // nextTokenTensor é shape (1, 1), generatedTokens é shape (1, current_seq_len)
-                generatedTokens = torch.cat(new[] { generatedTokens, nextTokenTensor }, dim: 1); // Concatena ao longo da dimensão da sequência
-
-
-                // Verificar se o token gerado é o token de fim de sequência
-                if (_tokenizerService.IsEndOfSequenceToken(nextTokenId))
+                if (generatedSequence.size(0) != 1)
                 {
-                    Console.WriteLine("\n[EOS] Token de fim de sequência gerado.");
-                    break; // Parar a geração se EOS for atingido
+                    if (convertedInput) currentTokens.Dispose(); // Dispose if created locally
+                    generatedSequence.Dispose();
+                    throw new ArgumentException("O método Generate atualmente suporta apenas batch_size de 1.");
                 }
 
-                // Dispor tensores temporários criados dentro do loop
-                probabilities.Dispose();
-                nextTokenTensor.Dispose();
-                nextTokenLogits.Dispose();
-                outputLogitsAllSteps.Dispose(); // Dispor a saída do forward pass
+                for (int i = 0; i < maxTokens; i++)
+                {
+                    using var outputLogits = this.forward(generatedSequence); 
+                    using var nextTokenLogits = outputLogits.select(1, -1).squeeze(1);
+
+                    if (temperature <= 1e-5f) // Avoid division by zero or extremely small numbers; treat as greedy
+                    {
+                        using var nextTokenTensor = torch.argmax(nextTokenLogits, dim: -1, keepdim: true);
+                        var tempGeneratedSequence = torch.cat(new[] { generatedSequence, nextTokenTensor }, dim: 1);
+                        generatedSequence.Dispose();
+                        generatedSequence = tempGeneratedSequence;
+                        long nextTokenId = nextTokenTensor.item<long>();
+                        if (_tokenizerService.IsEndOfSequenceToken(nextTokenId))
+                        {
+                            Console.WriteLine("\n[EOS] Token de fim de sequência gerado.");
+                            break;
+                        }
+                    }
+                    else
+                    {
+                        using var scaledLogits = nextTokenLogits / temperature;
+                        using var probabilities = torch.softmax(scaledLogits, dim: -1);
+                        using var nextTokenTensor = torch.multinomial(probabilities, num_samples: 1);
+                    
+                        var tempGeneratedSequence = torch.cat(new[] { generatedSequence, nextTokenTensor }, dim: 1);
+                        generatedSequence.Dispose();
+                        generatedSequence = tempGeneratedSequence;
+                        long nextTokenId = nextTokenTensor.item<long>(); // Assumes batch_size = 1
+                        if (_tokenizerService.IsEndOfSequenceToken(nextTokenId))
+                        {
+                            Console.WriteLine("\n[EOS] Token de fim de sequência gerado.");
+                            break;
+                        }
+                    }
+                }
             }
 
-            // Retorna a sequência completa gerada (input original + generated)
-            // Você pode querer retornar apenas os tokens *novos* gerados.
-            // Para isso, salve o tamanho inicial do inputTokens e slize generatedTokens.
-            // Exemplo: var initialLen = inputTokens.size(1); return generatedTokens.slice(dim: 1, start: initialLen, end: generatedTokens.size(1));
-
-            // Para simplificar, retornamos a sequência completa que inclui o input original
-            return generatedTokens;
+            if (convertedInput) currentTokens.Dispose(); // Dispose the (potentially) converted input if it was different from original inputTokens
+        
+            // _modelModule.train(); // Only set back to train if it was its original state and is intended.
+            // For a model primarily for generation, it might always stay in eval.
+            return generatedSequence; // Caller takes ownership
         }
 
-        // Implementação de Dispose para liberar recursos TorchSharp
-        private bool disposedValue; // Garantir que dispose não seja chamado múltiplas vezes
+        public override torch.Tensor forward(torch.Tensor input)
+        {
+            if (_modelModule == null)
+            {
+                throw new InvalidOperationException("O módulo do modelo não está inicializado.");
+            }
+            // Input type check is now inside SimpleRNNLanguageModel.forward
+            return _modelModule.forward(input); // Caller takes ownership of returned tensor
+        }
+
+        private bool _disposedValue;
 
         protected override void Dispose(bool disposing)
         {
-            if (!disposedValue)
+            if (!_disposedValue)
             {
                 if (disposing)
                 {
-                    // Dispor recursos gerenciados (se houver)
+                    _modelModule?.Dispose();
+                    _modelModule = null;
                 }
-
-                // Dispor o módulo TorchSharp
-                modelModule?.Dispose();
-                modelModule = null; // Garantir que a referência seja nula
-
-                disposedValue = true;
+                _disposedValue = true;
             }
-            base.Dispose(disposing); // Chamar o Dispose da base
+            base.Dispose(disposing);
         }
-
-         // A implementação da interface IDisposable chama Dispose(true)
-         // Não precisamos de um finalizador aqui pois BaseGenerativeModel já tem um padrão.
     }
+
+// Dummy TokenizerService for compilation if not provided
+}

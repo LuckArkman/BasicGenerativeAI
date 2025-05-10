@@ -32,10 +32,10 @@ var rnnLayers = 2;      // Deve ser o mesmo usado no modelo
 
 // Configurar dispositivo (CPU ou GPU)
 // Use Device.CUDA if CUDA is available and you installed TorchSharp-cuda-xxx package
-var device = torch.Device.CPU;
+var device = torch.CPU;
 if (torch.cuda.is_available())
 {
-    device = torch.Device.CPU;
+    device = torch.CUDA;
     Console.WriteLine("CUDA disponível. Usando GPU para treinamento/inferência.");
 }
 else
@@ -77,7 +77,7 @@ using (var tokenizerService = new TokenizerService())
 
 
         // Use blocos using para outros componentes
-        using (var history = new ConversationHistory(maxTurns: 10))
+        using (var history = new ConversationHistory(maxTurns: 1000))
         {
             // Inicializa o serviço de busca *apenas* se as configurações estiverem presentes
             using (var searchService = (string.IsNullOrEmpty(googleApiKey) || string.IsNullOrEmpty(googleCx)) ?
