@@ -2,3 +2,7 @@
 *.pdb
 obj/**
 
+
+BasicGenerativeAI/BasicGenerativeAI/obj/
+
+BasicGenerativeAI/BasicGenerativeAI/bin/
