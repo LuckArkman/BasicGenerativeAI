@@ -49,15 +49,12 @@ public class TrainingScript
         }
 
         string trainingText = File.ReadAllText("training_text.txt");
-        var tokens = _tokenizerService.TokenizeText(trainingText).ToArray();
-
-        if (tokens.Length == 0)
-        {
-            Console.WriteLine("Erro: Nenhum token encontrado no texto de treinamento.");
-            return;
-        }
-
-        var trainingBatches = PrepareBatches(tokens, _batchSize, _maxSequenceLength).ToArray();
+        var trainingBatches = TrainingDataHelper.PrepareBatches(
+            trainingText,
+            _tokenizerService,
+            _maxSequenceLength,
+            _batchSize
+        ).ToArray();
 
         Console.WriteLine($"Total de batches: {trainingBatches.Length}");
         if (trainingBatches.Length == 0)
@@ -66,9 +63,8 @@ public class TrainingScript
             return;
         }
 
-        // Inicializar otimizador e critério
         var parameters = _model.parameters();
-        Console.WriteLine($"Número de parâmetros: {parameters.Count()}"); // Debug
+        Console.WriteLine($"Número de parâmetros: {parameters.Count()}");
         _optimizer = Adam(
             parameters,
             lr: _learningRate,
@@ -114,9 +110,6 @@ public class TrainingScript
                 if (outputLogits is null || outputLogits.Handle == IntPtr.Zero)
                 {
                     Console.WriteLine("Erro: outputLogits inválido após forward.");
-                    Console.WriteLine($"Input batch max ID: {maxId}, min ID: {minId}");
-                    Console.WriteLine(
-                        $"Input batch values (primeiros 10): [{string.Join(", ", inputBatch.flatten().to_type(ScalarType.Int64).cpu().data<long>().Take(10))}]");
                     continue;
                 }
 
@@ -139,7 +132,7 @@ public class TrainingScript
                 if (batchProcessed % 10 == 0)
                 {
                     Console.WriteLine(
-                        $"  Época {epoch}/{_epochs}, Batch {batchProcessed}/{trainingBatches.Length}, Loss: {totalLoss / batchProcessed:F4}");
+                        $"Época {epoch}/{_epochs}, Batch {batchProcessed}/{trainingBatches.Length}, Loss: {totalLoss / batchProcessed:F4}");
                 }
             }
 
