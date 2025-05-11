@@ -1,17 +1,17 @@
 using BasicGenerativeAI.Core;
 using BasicGenerativeAI.Services;
 using TorchSharp;
-using static TorchSharp.torch;
-using static TorchSharp.torch.nn;
-using static TorchSharp.torch.optim; // Para otimizadores
+using static TorchSharp.torch; // Mantido para torch.tensor, etc.
+using TorchSharp.Modules; // Mantido para torch.tensor, etc.
+using static TorchSharp.torch.optim;
 using System.Collections.Generic;
 using System.Linq;
 using System.IO;
-using TorchSharp.Modules; // Para caminhos de arquivo
+// using TorchSharp.Modules; // Não é estritamente necessário se usar torch.nn.Module
 
 namespace BasicGenerativeAI.System;
 
-public class TrainingScript
+public class TrainingScript : IDisposable // Implementa IDisposable
 {
     private readonly TokenizerService _tokenizerService;
     private readonly TorchSharpGenerativeModel _model;
@@ -21,10 +21,11 @@ public class TrainingScript
     private readonly double _learningRate;
     private readonly string _modelSavePath;
     private readonly Device _device;
-    private Optimizer _optimizer;
-    private CrossEntropyLoss _criterion;
 
-    // Construtor
+    // Tratado CS8618 tornando-os anuláveis.
+    private Optimizer? _optimizer;
+    private CrossEntropyLoss? _criterion; // Usar TorchSharp.Modules.CrossEntropyLoss
+
     public TrainingScript(TokenizerService tokenizerService, TorchSharpGenerativeModel model,
         int epochs, int batchSize, int maxSequenceLength, double learningRate,
         string modelSavePath, Device device)
@@ -39,140 +40,145 @@ public class TrainingScript
         _device = device ?? torch.CPU;
     }
 
-    // Executa o processo de treinamento
     public void RunTraining()
     {
         if (!File.Exists("training_text.txt"))
         {
-            Console.WriteLine("Erro: Arquivo 'training_text.txt' não encontrado.");
+            Console.WriteLine("Erro: Arquivo 'training_text.txt' não encontrado. Crie este arquivo com texto para treinamento.");
+            // Você pode adicionar aqui a lógica para criar um arquivo de exemplo se ele não existir:
+            // File.WriteAllText("training_text.txt", TrainingDataHelper.ExampleTrainingData);
+            // Console.WriteLine("Arquivo 'training_text.txt' criado com dados de exemplo. Edite-o e execute novamente.");
             return;
         }
 
         string trainingText = File.ReadAllText("training_text.txt");
+        if (string.IsNullOrWhiteSpace(trainingText))
+        {
+            Console.WriteLine("Erro: O arquivo 'training_text.txt' está vazio.");
+            return;
+        }
+
         var trainingBatches = TrainingDataHelper.PrepareBatches(
             trainingText,
             _tokenizerService,
             _maxSequenceLength,
             _batchSize
-        ).ToArray();
+        ).ToArray(); // ToArray() para materializar a coleção
 
-        Console.WriteLine($"Total de batches: {trainingBatches.Length}");
-        if (trainingBatches.Length == 0)
+        Console.WriteLine($"Total de batches de treinamento: {trainingBatches.Length}");
+        if (!trainingBatches.Any()) // Usar Any() para verificar se a coleção está vazia
         {
-            Console.WriteLine("Erro: Nenhum batch criado para treinamento.");
+            Console.WriteLine("Erro: Nenhum batch de treinamento foi criado. Verifique os dados de treinamento e maxSequenceLength.");
             return;
         }
 
-        var parameters = _model.parameters();
-        Console.WriteLine($"Número de parâmetros: {parameters.Count()}");
-        _optimizer = Adam(
-            parameters,
-            lr: _learningRate,
-            beta1: 0.9,
-            beta2: 0.999,
-            eps: 1e-8,
-            weight_decay: 0.0,
-            amsgrad: false
-        );
-        _criterion = CrossEntropyLoss();
+        // Pegar apenas parâmetros treináveis
+        var parameters = _model.parameters().Where(p => p.requires_grad).ToList();
+        if (!parameters.Any())
+        {
+            Console.WriteLine("Erro: O modelo não possui parâmetros treináveis.");
+            return;
+        }
+        Console.WriteLine($"Número de tensores de parâmetros treináveis: {parameters.Count()}");
+        
+        _optimizer = Adam(parameters, lr: _learningRate); // Outros hiperparâmetros do Adam têm defaults razoáveis
+        _criterion = torch.nn.CrossEntropyLoss(); // Pode adicionar ignore_index: _tokenizerService.PadTokenId se o PAD ID for consistente
 
-        float totalLoss = 0f;
-        int batchProcessed = 0;
+        _model.train(); // Coloca o modelo em modo de treinamento
 
         for (int epoch = 0; epoch < _epochs; epoch++)
         {
-            Console.WriteLine($"Época {epoch + 1}/{_epochs}...");
-            totalLoss = 0f;
-            batchProcessed = 0;
+            Console.WriteLine($"\nÉpoca {epoch + 1}/{_epochs}...");
+            float epochTotalLoss = 0f;
+            int batchesProcessedThisEpoch = 0;
 
-            foreach (var (inputBatch, targetBatch) in trainingBatches)
+            foreach (var (inputBatchOriginal, targetBatchOriginal) in trainingBatches)
             {
-                batchProcessed++;
-                Console.WriteLine(
-                    $"Batch {batchProcessed}: Input shape: [{string.Join(", ", inputBatch.shape)}], Target shape: [{string.Join(", ", targetBatch.shape)}]");
+                // Mover batches para o device ANTES de usá-los
+                using var inputBatch = inputBatchOriginal.to(_device);
+                using var targetBatch = targetBatchOriginal.to(_device);
 
-                if (inputBatch.Handle == IntPtr.Zero)
+                batchesProcessedThisEpoch++;
+                // Descomente para log detalhado de cada batch:
+                // Console.WriteLine($"  Batch {batchesProcessedThisEpoch}/{trainingBatches.Length}: Input shape: [{string.Join(", ", inputBatch.shape)}], Target shape: [{string.Join(", ", targetBatch.shape)}]");
+
+                // Opcional: Verificação de validade dos IDs (já presente, mas pode ser útil)
+                // long maxId = inputBatch.max().item<long>();
+                // long minId = inputBatch.min().item<long>();
+                // if (maxId >= _tokenizerService.VocabularySize || minId < 0)
+                // {
+                //     Console.WriteLine($"  Erro no Batch: IDs [{minId}-{maxId}] fora do intervalo do vocabulário [0, {_tokenizerService.VocabularySize - 1}].");
+                //     continue; 
+                // }
+
+                _optimizer!.zero_grad(); // Usar '!' pois temos certeza que _optimizer é inicializado
+
+                // outputLogits não deve ser disposed pelo _model.forward()
+                using var outputLogits = _model.forward(inputBatch); 
+                // outputLogits shape: (batch_size, sequence_length, vocab_size)
+
+                if (outputLogits is null || outputLogits.Handle == IntPtr.Zero) // Verificação de segurança
                 {
-                    Console.WriteLine("Erro: inputBatch inválido antes de passar para o modelo.");
+                    Console.WriteLine("Erro: outputLogits inválido após _model.forward().");
                     continue;
                 }
+                // Console.WriteLine($"  Output logits shape: [{string.Join(", ", outputLogits.shape)}]");
 
-                long maxId = inputBatch.max().item<long>();
-                long minId = inputBatch.min().item<long>();
-                Console.WriteLine($"Input batch - Máximo ID: {maxId}, Mínimo ID: {minId}");
-                if (maxId >= _tokenizerService.VocabularySize || minId < 0)
-                {
-                    Console.WriteLine($"Erro: IDs fora do intervalo [0, {_tokenizerService.VocabularySize - 1}]");
-                    continue;
-                }
 
-                using var outputLogits = _model.forward(inputBatch);
-                if (outputLogits is null || outputLogits.Handle == IntPtr.Zero)
-                {
-                    Console.WriteLine("Erro: outputLogits inválido após forward.");
-                    continue;
-                }
+                // Reshape para CrossEntropyLoss:
+                // Logits: (N, C) = (batch_size * sequence_length, vocab_size)
+                // Targets: (N) = (batch_size * sequence_length)
+                using var reshapedLogits = outputLogits.view(-1, _tokenizerService.VocabularySize);
+                using var reshapedTargets = targetBatch.view(-1);
 
-                Console.WriteLine($"Output logits shape: [{string.Join(", ", outputLogits.shape)}]");
+                using var loss = _criterion!.forward(reshapedLogits, reshapedTargets); // Usar '!'
 
-                using var reshapedLogits = outputLogits.view(
-                    outputLogits.size(0) * outputLogits.size(1),
-                    outputLogits.size(2)
-                );
-                using var reshapedTargets = targetBatch.view(targetBatch.size(0) * targetBatch.size(1));
-
-                using var loss = _criterion.forward(reshapedLogits, reshapedTargets);
-
-                _optimizer.zero_grad();
                 loss.backward();
                 _optimizer.step();
 
-                totalLoss += loss.ToSingle();
+                epochTotalLoss += loss.item<float>(); // Usar .item<float>()
 
-                if (batchProcessed % 10 == 0)
+                if (batchesProcessedThisEpoch % 10 == 0 || batchesProcessedThisEpoch == trainingBatches.Length)
                 {
-                    Console.WriteLine(
-                        $"Época {epoch}/{_epochs}, Batch {batchProcessed}/{trainingBatches.Length}, Loss: {totalLoss / batchProcessed:F4}");
+                    Console.WriteLine($"    Batch {batchesProcessedThisEpoch}/{trainingBatches.Length}, Loss Atual: {loss.item<float>():F4}, Loss Média Época (até agora): {epochTotalLoss / batchesProcessedThisEpoch:F4}");
                 }
             }
 
-            double avgLoss = totalLoss / batchProcessed;
-            Console.WriteLine($"Época {epoch}/{_epochs} concluída. Loss média: {avgLoss:F4}");
+            double avgLossThisEpoch = (batchesProcessedThisEpoch > 0) ? (epochTotalLoss / batchesProcessedThisEpoch) : 0.0;
+            Console.WriteLine($"  Época {epoch + 1}/{_epochs} concluída. Loss média da época: {avgLossThisEpoch:F4}");
 
-            if (epoch % 5 == 0 || epoch == _epochs - 1)
+            if ((epoch + 1) % 5 == 0 || (epoch + 1) == _epochs) // Salvar a cada 5 épocas ou na última
             {
-                _model.Save($"{_modelSavePath.Replace(".pth", "")}_epoch{epoch}.pth");
+                string checkpointPath = _modelSavePath.Replace(".pth", $"_epoch{epoch + 1}.pth");
+                _model.Save(checkpointPath);
+                Console.WriteLine($"  Modelo salvo em checkpoint: {checkpointPath}");
             }
         }
 
-        Console.WriteLine("Treinamento concluído.");
+        Console.WriteLine("\nTreinamento concluído.");
         _model.Save(_modelSavePath);
-
-        _criterion?.Dispose();
+        Console.WriteLine($"Modelo final salvo em: {_modelSavePath}");
     }
 
-    private IEnumerable<(torch.Tensor, torch.Tensor)> PrepareBatches(long[] tokens, int batchSize,
-        int maxSequenceLength)
+    // Remover o método privado PrepareBatches se não for usado, pois TrainingDataHelper.PrepareBatches é usado.
+
+    private bool disposedValue;
+    protected virtual void Dispose(bool disposing)
     {
-        for (int i = 0; i < tokens.Length - maxSequenceLength; i += batchSize * maxSequenceLength)
+        if (!disposedValue)
         {
-            int batchEnd = Math.Min(i + batchSize * maxSequenceLength, tokens.Length);
-            var batchTokens = tokens.Skip(i).Take(batchEnd - i).ToArray();
-
-            for (int j = 0; j < batchTokens.Length - maxSequenceLength; j += maxSequenceLength)
+            if (disposing)
             {
-                var sequence = batchTokens.Skip(j).Take(maxSequenceLength).ToArray();
-                if (sequence.Length < maxSequenceLength) continue;
-
-                var input = torch.tensor(sequence.Take(maxSequenceLength - 1).ToArray(), dtype: ScalarType.Int64);
-                var target = torch.tensor(sequence.Skip(1).Take(maxSequenceLength - 1).ToArray(),
-                    dtype: ScalarType.Int64);
-
-                if (input.shape[0] == maxSequenceLength - 1 && target.shape[0] == maxSequenceLength - 1)
-                {
-                    yield return (input, target);
-                }
+                _optimizer?.Dispose();
+                _criterion?.Dispose();
             }
+            disposedValue = true;
         }
+    }
+
+    public void Dispose()
+    {
+        Dispose(disposing: true);
+        GC.SuppressFinalize(this);
     }
 }
