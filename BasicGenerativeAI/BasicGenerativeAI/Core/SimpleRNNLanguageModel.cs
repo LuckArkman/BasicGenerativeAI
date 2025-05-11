@@ -22,12 +22,11 @@ public class SimpleRNNLanguageModel : Module<Tensor, Tensor>
         _hiddenDim = hiddenDim;
 
         _embedding = Embedding(vocabSize, embeddingDim).to(device);
-        _rnn = GRU(inputSize: embeddingDim, hiddenSize: hiddenDim, numLayers: rnnLayers, batchFirst: true).to(device);
+        _rnn = GRU(inputSize: embeddingDim, hiddenSize: hiddenDim, numLayers: rnnLayers, batchFirst: true).to(device); // Corrigir hiddenSize
         _linear = Linear(hiddenDim, vocabSize).to(device);
 
         RegisterComponents();
 
-        // Verificação inicial para garantir que a camada GRU tem parâmetros
         var rnnParams = _rnn.parameters();
         if (rnnParams.Count() == 0)
         {
@@ -53,13 +52,13 @@ public class SimpleRNNLanguageModel : Module<Tensor, Tensor>
         }
 
         using var embedded = _embedding.forward(input);
-        if (embedded.Handle == IntPtr.Zero)
+        if (embedded is null || embedded.Handle == IntPtr.Zero)
         {
             throw new InvalidOperationException("Embedded tensor is invalid after embedding forward.");
         }
         Console.WriteLine($"Embedded shape: [{string.Join(", ", embedded.shape)}]");
 
-        if ((bool)(hidden == null))
+        if (hidden is null)
         {
             long batchSize = input.size(0);
             hidden = torch.zeros(_numLayers, batchSize, _hiddenDim, device: _device);
@@ -71,8 +70,8 @@ public class SimpleRNNLanguageModel : Module<Tensor, Tensor>
 
         var rnnOutputTuple = _rnn.forward(embedded, hidden);
         using var output = rnnOutputTuple.Item1;
-        rnnOutputTuple.Item2?.Dispose();
-        if (output.Handle == IntPtr.Zero)
+        using var newHidden = rnnOutputTuple.Item2;
+        if (output is null || output.Handle == IntPtr.Zero)
         {
             throw new InvalidOperationException("RNN output tensor is invalid after GRU forward.");
         }
@@ -80,6 +79,10 @@ public class SimpleRNNLanguageModel : Module<Tensor, Tensor>
 
         using var reshapedOutput = output.reshape(-1, output.size(2));
         using var logits = _linear.forward(reshapedOutput);
+        if (logits is null || logits.Handle == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("Logits tensor is invalid after linear forward.");
+        }
         using var reshapedLogits = logits.reshape(output.size(0), output.size(1), logits.size(-1));
 
         return reshapedLogits;
