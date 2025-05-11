@@ -4,7 +4,7 @@ using System.Text;
 
 namespace BasicGenerativeAI.System;
 
-public class ConversationHistory
+public class ConversationHistory : IDisposable
 {
     private readonly List<(string speaker, string text)> _history;
     private readonly int _maxTurns; // Opcional: Limitar o histórico para não ficar muito longo
@@ -57,5 +57,11 @@ public class ConversationHistory
     public List<(string speaker, string text)> GetHistory()
     {
         return new List<(string speaker, string text)>(_history); // Retorna uma cópia
+    }
+
+    public void Dispose()
+    {
+        Dispose();
+        GC.SuppressFinalize(this);
     }
 }

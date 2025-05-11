@@ -174,13 +174,14 @@ namespace BasicGenerativeAI.Core
         }
         
         // Adicionar método parameters() para delegar ao _modelModule
-        public IEnumerable<torch.Tensor> parameters()
+        public IEnumerable<Parameter> parameters()
         {
             if (_modelModule == null)
             {
                 throw new InvalidOperationException("Modelo não inicializado.");
             }
-            return _modelModule.parameters();
+            // Converter os tensores retornados por _modelModule.parameters() para Parameter
+            return _modelModule.parameters().Select(tensor => new Parameter(tensor));
         }
 
         public override void Save(string filePath)

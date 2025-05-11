@@ -20,7 +20,10 @@ public static class TrainingDataHelper
     {
         // 1. Tokenizar o texto completo
         Console.WriteLine("Tokenizando texto de treinamento...");
-        List<long> allTokenIds = tokenizerService.Encode(text);
+        // Converter o Tensor retornado por Encode para List<long>
+        var tokenTensor = tokenizerService.Encode(text);
+        var allTokenIds = tokenTensor.cpu().data<long>().ToList();
+        tokenTensor.Dispose(); // Dispor do Tensor original após extrair os dados
         Console.WriteLine($"Total de tokens: {allTokenIds.Count}");
 
         // Adicionar o token de fim de sequência (EOS) no final, se não estiver lá
