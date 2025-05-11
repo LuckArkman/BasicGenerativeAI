@@ -15,7 +15,7 @@ var builder = new ConfigurationBuilder()
 IConfiguration configuration = builder.Build();
 
 // Obter configurações da API do Google
-var googleApiKey = configuration["GoogleSearch:ApiKey"];
+var googleApiKey = configuration["GoogleSearch:AIzaSyC6OGMruyoQMGUnMFL7rqwoqVrX6PBrfvQ"];
 var googleCx = configuration["GoogleSearch:Cx"];
 
 // Caminho para salvar/carregar o modelo

@@ -57,6 +57,16 @@ namespace BasicGenerativeAI.Services
                 $"Tokenizer interno carregado. Vocabulário: {VocabularySize}. EOS ID: {_endOfSequenceTokenId}. PAD ID: {_padTokenId}.");
         }
 
+        public long[] TokenizeText(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+                return Array.Empty<long>();
+
+            // Usar o SimpleBPETokenizer para tokenização
+            var encoded = _tokenizer.Encode(text);
+            return encoded.Select(id => (long)id).ToArray();
+        }
+
         public List<long> Encode(string text, bool addSpecialTokens = true, int? maxLength = null)
         {
             if (string.IsNullOrEmpty(text))

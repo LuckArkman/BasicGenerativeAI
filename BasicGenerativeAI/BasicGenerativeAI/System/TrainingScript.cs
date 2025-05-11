@@ -12,66 +12,89 @@ using TorchSharp.Modules; // Para caminhos de arquivo
 namespace BasicGenerativeAI.System;
 
 public class TrainingScript
-    {
-        private readonly TokenizerService _tokenizerService;
-        private readonly TorchSharpGenerativeModel _model;
-        private readonly int _epochs;
-        private readonly int _batchSize;
-        private readonly int _maxSequenceLength;
-        private readonly double _learningRate;
-        private readonly string _modelSavePath;
-        private readonly Device _device; // CPU ou GPU
-        private OptimizerHelper _optimizer; // O Optimizer não é IDisposable
-        private Loss<Tensor, Tensor, Tensor> _criterion; // Loss é IDisposable
+{
+    private readonly TokenizerService _tokenizerService;
+    private readonly TorchSharpGenerativeModel _model;
+    private readonly int _epochs;
+    private readonly int _batchSize;
+    private readonly int _maxSequenceLength;
+    private readonly double _learningRate;
+    private readonly string _modelSavePath;
+    private readonly Device _device;
+    private Optimizer _optimizer;
+    private CrossEntropyLoss _criterion;
 
-        // Construtor
-        public TrainingScript(TokenizerService tokenizerService, TorchSharpGenerativeModel model,
-                              int epochs, int batchSize, int maxSequenceLength, double learningRate,
-                              string modelSavePath, Device device)
+    // Construtor
+    public TrainingScript(TokenizerService tokenizerService, TorchSharpGenerativeModel model,
+        int epochs, int batchSize, int maxSequenceLength, double learningRate,
+        string modelSavePath, Device device)
+    {
+        _tokenizerService = tokenizerService ?? throw new ArgumentNullException(nameof(tokenizerService));
+        _model = model ?? throw new ArgumentNullException(nameof(model));
+        _epochs = epochs;
+        _batchSize = batchSize;
+        _maxSequenceLength = maxSequenceLength;
+        _learningRate = learningRate;
+        _modelSavePath = modelSavePath ?? throw new ArgumentNullException(nameof(modelSavePath));
+        _device = device ?? torch.CPU;
+    }
+
+    // Executa o processo de treinamento
+    public void RunTraining()
+    {
+        if (!File.Exists("training_text.txt"))
         {
-            _tokenizerService = tokenizerService ?? throw new ArgumentNullException(nameof(tokenizerService));
-            _model = model ?? throw new ArgumentNullException(nameof(model));
-            _epochs = epochs;
-            _batchSize = batchSize;
-            _maxSequenceLength = maxSequenceLength;
-            _learningRate = learningRate;
-            _modelSavePath = modelSavePath;
-            _device = device ?? torch.CPU; // Default para CPU se não especificado
+            Console.WriteLine("Erro: Arquivo 'training_text.txt' não encontrado.");
+            return;
         }
 
-        // Executa o processo de treinamento
-        public void RunTraining()
-    {
-        // Usar o tokenizerService injetado via construtor
-        var trainingText = File.ReadAllText("training_text.txt"); // Certifique-se de que o arquivo existe
-        var trainingBatches = TrainingDataHelper.PrepareBatches(trainingText, _tokenizerService, maxSequenceLength: _maxSequenceLength, batchSize: _batchSize);
+        string trainingText = File.ReadAllText("training_text.txt");
+        var tokens = _tokenizerService.TokenizeText(trainingText).ToArray();
 
-        // Inicializar otimizador e critério
-        _optimizer = Adam(_model.parameters(), lr: _learningRate);
-        _criterion = CrossEntropyLoss();
+        if (tokens.Length == 0)
+        {
+            Console.WriteLine("Erro: Nenhum token encontrado no texto de treinamento.");
+            return;
+        }
 
-        Console.WriteLine($"Total de batches: {trainingBatches.Count}");
-        if (trainingBatches.Count == 0)
+        var trainingBatches = PrepareBatches(tokens, _batchSize, _maxSequenceLength).ToArray();
+
+        Console.WriteLine($"Total de batches: {trainingBatches.Length}");
+        if (trainingBatches.Length == 0)
         {
             Console.WriteLine("Erro: Nenhum batch criado para treinamento.");
             return;
         }
 
+        // Inicializar otimizador e critério
+        var parameters = _model.parameters();
+        Console.WriteLine($"Número de parâmetros: {parameters.Count()}"); // Debug
+        _optimizer = Adam(
+            parameters,
+            lr: _learningRate,
+            beta1: 0.9,
+            beta2: 0.999,
+            eps: 1e-8,
+            weight_decay: 0.0,
+            amsgrad: false
+        );
+        _criterion = CrossEntropyLoss();
+
         float totalLoss = 0f;
-        int batchCount = 0;
+        int batchProcessed = 0;
 
         for (int epoch = 0; epoch < _epochs; epoch++)
         {
             Console.WriteLine($"Época {epoch + 1}/{_epochs}...");
-            batchCount = 0;
             totalLoss = 0f;
+            batchProcessed = 0;
 
             foreach (var (inputBatch, targetBatch) in trainingBatches)
             {
-                batchCount++;
-                Console.WriteLine($"Batch {batchCount}: Input shape: [{string.Join(", ", inputBatch.shape)}], Target shape: [{string.Join(", ", targetBatch.shape)}]");
+                batchProcessed++;
+                Console.WriteLine(
+                    $"Batch {batchProcessed}: Input shape: [{string.Join(", ", inputBatch.shape)}], Target shape: [{string.Join(", ", targetBatch.shape)}]");
 
-                // Validar o inputBatch
                 if (inputBatch.Handle == IntPtr.Zero)
                 {
                     Console.WriteLine("Erro: inputBatch inválido antes de passar para o modelo.");
@@ -87,50 +110,42 @@ public class TrainingScript
                     continue;
                 }
 
-                // Forward pass único
-                using var outputLogits = _model._modelModule.forward(inputBatch);
-                // Verificar validade do Tensor de forma explícita
-                bool isOutputNull = outputLogits is null;
-                bool isHandleInvalid = !isOutputNull && outputLogits.Handle == IntPtr.Zero;
-                bool isOutputInvalid = isOutputNull || isHandleInvalid;
-                if (isOutputInvalid)
+                using var outputLogits = _model.forward(inputBatch);
+                if (outputLogits is null || outputLogits.Handle == IntPtr.Zero)
                 {
                     Console.WriteLine("Erro: outputLogits inválido após forward.");
                     Console.WriteLine($"Input batch max ID: {maxId}, min ID: {minId}");
-                    Console.WriteLine($"Input batch values (primeiros 10): [{string.Join(", ", inputBatch.flatten().to_type(ScalarType.Int64).cpu().data<long>().Take(10))}]");
+                    Console.WriteLine(
+                        $"Input batch values (primeiros 10): [{string.Join(", ", inputBatch.flatten().to_type(ScalarType.Int64).cpu().data<long>().Take(10))}]");
                     continue;
                 }
 
                 Console.WriteLine($"Output logits shape: [{string.Join(", ", outputLogits.shape)}]");
 
-                // Reshape logits e targets
                 using var reshapedLogits = outputLogits.view(
                     outputLogits.size(0) * outputLogits.size(1),
                     outputLogits.size(2)
                 );
                 using var reshapedTargets = targetBatch.view(targetBatch.size(0) * targetBatch.size(1));
 
-                // Calcular a perda
                 using var loss = _criterion.forward(reshapedLogits, reshapedTargets);
 
-                // Backward pass
                 _optimizer.zero_grad();
                 loss.backward();
                 _optimizer.step();
 
                 totalLoss += loss.ToSingle();
-                batchCount++;
 
-                if (batchCount % 10 == 0)
+                if (batchProcessed % 10 == 0)
                 {
-                    Console.WriteLine($"  Época {epoch}/{_epochs}, Batch {batchCount}/{trainingBatches.Count}, Loss: {totalLoss / batchCount:F4}");
+                    Console.WriteLine(
+                        $"  Época {epoch}/{_epochs}, Batch {batchProcessed}/{trainingBatches.Length}, Loss: {totalLoss / batchProcessed:F4}");
                 }
             }
 
-            double avgLoss = totalLoss / batchCount;
+            double avgLoss = totalLoss / batchProcessed;
             Console.WriteLine($"Época {epoch}/{_epochs} concluída. Loss média: {avgLoss:F4}");
 
-            // Salvar o modelo a cada 5 épocas e na última
             if (epoch % 5 == 0 || epoch == _epochs - 1)
             {
                 _model.Save($"{_modelSavePath.Replace(".pth", "")}_epoch{epoch}.pth");
@@ -140,7 +155,31 @@ public class TrainingScript
         Console.WriteLine("Treinamento concluído.");
         _model.Save(_modelSavePath);
 
-        // Limpar referências (os tensores já foram dispostos com using)
-        trainingBatches.Clear();
+        _criterion?.Dispose();
     }
+
+    private IEnumerable<(torch.Tensor, torch.Tensor)> PrepareBatches(long[] tokens, int batchSize,
+        int maxSequenceLength)
+    {
+        for (int i = 0; i < tokens.Length - maxSequenceLength; i += batchSize * maxSequenceLength)
+        {
+            int batchEnd = Math.Min(i + batchSize * maxSequenceLength, tokens.Length);
+            var batchTokens = tokens.Skip(i).Take(batchEnd - i).ToArray();
+
+            for (int j = 0; j < batchTokens.Length - maxSequenceLength; j += maxSequenceLength)
+            {
+                var sequence = batchTokens.Skip(j).Take(maxSequenceLength).ToArray();
+                if (sequence.Length < maxSequenceLength) continue;
+
+                var input = torch.tensor(sequence.Take(maxSequenceLength - 1).ToArray(), dtype: ScalarType.Int64);
+                var target = torch.tensor(sequence.Skip(1).Take(maxSequenceLength - 1).ToArray(),
+                    dtype: ScalarType.Int64);
+
+                if (input.shape[0] == maxSequenceLength - 1 && target.shape[0] == maxSequenceLength - 1)
+                {
+                    yield return (input, target);
+                }
+            }
+        }
     }
+}
