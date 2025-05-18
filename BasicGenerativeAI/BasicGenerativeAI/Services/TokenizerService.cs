@@ -23,18 +23,16 @@ namespace BasicGenerativeAI.Services
         public int PadTokenId => _padTokenId;
         public string EndOfSequenceTokenString => _endOfSequenceTokenString;
 
-        public TokenizerService(string modelNameOrPath = null) // Parâmetro mantido para compatibilidade, mas não usado
+        public TokenizerService() // Remover o parâmetro
         {
             _tokenizer = new SimpleBPETokenizer();
 
-            // Treinar o tokenizer com um pequeno corpus (exemplo)
             var corpus = new List<string>
             {
                 "hello world", "this is a test", "basic generative ai", "how are you", "machine learning"
             };
             _tokenizer.Train(corpus, numMerges: 50);
 
-            // Definir tokens especiais
             _endOfSequenceTokenString = "<|endoftext|>";
             if (!_tokenizer.Vocab.ContainsKey(_endOfSequenceTokenString))
             {
@@ -55,6 +53,14 @@ namespace BasicGenerativeAI.Services
 
             Console.WriteLine(
                 $"Tokenizer interno carregado. Vocabulário: {VocabularySize}. EOS ID: {_endOfSequenceTokenId}. PAD ID: {_padTokenId}.");
+        }
+
+        public long[] TokenizeText(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+                return Array.Empty<long>();
+
+            return Encode(text, addSpecialTokens: true).ToArray(); // Usar Encode para incluir EOS
         }
 
         public List<long> Encode(string text, bool addSpecialTokens = true, int? maxLength = null)

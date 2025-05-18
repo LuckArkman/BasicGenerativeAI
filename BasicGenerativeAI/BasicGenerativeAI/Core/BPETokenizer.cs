@@ -5,13 +5,11 @@ namespace BasicGenerativeAI.Core;
 
 public class BPETokenizer
 {
-    private Dictionary<string, int> _vocab; // token -> id
-    private Dictionary<int, string> _inverseVocab; // id -> token
-    private List<(string, string)> _mergesList; // Lista ordenada de mesclagens
-    private Dictionary<(string, string), int> _mergeRanks; // (p1, p2) -> rank (prioridade)
-    private Regex _pretokenizeRegex; // Regex de pré-tokenização do GPT-2
-
-    // Cache para palavras já tokenizadas com BPE
+    private Dictionary<string, int> _vocab = new Dictionary<string, int>(); // Inicializar
+    private Dictionary<int, string> _inverseVocab = new Dictionary<int, string>(); // Inicializar
+    private List<(string, string)> _mergesList = new List<(string, string)>(); // Inicializar
+    private Dictionary<(string, string), int> _mergeRanks = new Dictionary<(string, string), int>(); // Inicializar
+    private Regex _pretokenizeRegex;
     private Dictionary<string, List<string>> _bpeCache = new Dictionary<string, List<string>>();
 
     public BPETokenizer(string vocabPath, string mergesPath)
@@ -19,12 +17,6 @@ public class BPETokenizer
         LoadVocab(vocabPath);
         LoadMerges(mergesPath);
 
-        // Regex de pré-tokenização do GPT-2 (complexa!)
-        // Esta é uma simplificação, a original é mais elaborada.
-        // A regex original do GPT-2 é:
-        // 's|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+
-        // Adaptar isso para .NET Regex pode ser necessário.
-        // Para este exemplo, usaremos uma mais simples.
         _pretokenizeRegex = new Regex(@"'s|'t|'re|'ve|'m|'ll|'d|[\p{L}]+|[\p{N}]+|[^\s\p{L}\p{N}]+|\s", RegexOptions.Compiled);
     }
 

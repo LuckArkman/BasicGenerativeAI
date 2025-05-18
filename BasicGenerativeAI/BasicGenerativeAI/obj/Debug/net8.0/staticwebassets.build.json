@@ -1,11 +1,12 @@
 {
   "Version": 1,
-  "Hash": "ZrZOertWZkvzTOcsDDOvQ6e7NLyYWsTomyP4sruOdNs=",
+  "Hash": "yIsutfNvFhVo/eTHqghkm0ykX5SanrHeFb8ei99S+8Q=",
   "Source": "BasicGenerativeAI",
   "BasePath": "_content/BasicGenerativeAI",
   "Mode": "Default",
   "ManifestType": "Build",
   "ReferencedProjectsConfiguration": [],
   "DiscoveryPatterns": [],
-  "Assets": []
+  "Assets": [],
+  "Endpoints": []
 }
